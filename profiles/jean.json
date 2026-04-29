@@ -1,0 +1,11 @@
+{
+  "name": "Jean",
+  "favorite_teams": [
+    {
+      "id": 121,
+      "name": "Palmeiras",
+      "sport": "football"
+    }
+  ],
+  "timezone": "America/Sao_Paulo"
+}
