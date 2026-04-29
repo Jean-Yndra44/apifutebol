@@ -11,14 +11,30 @@ from src.user_manager import UserProfile
 _PROFILES_DIR = Path("profiles")
 _PLACEHOLDER = "— select —"
 
-_ACTIVE_CLIENTS = [FootballClient, F1Client]
+# All 12 API-Sports categories.
+# status: "live" = full integration | "f1" = mock data available | "wip" = not yet integrated
+_SPORTS: list[dict] = [
+    {"name": "Football",          "icon": "⚽", "status": "live"},
+    {"name": "Formula 1",         "icon": "🏎️", "status": "f1"},
+    {"name": "Basketball",        "icon": "🏀", "status": "wip"},
+    {"name": "Baseball",          "icon": "⚾", "status": "wip"},
+    {"name": "Ice Hockey",        "icon": "🏒", "status": "wip"},
+    {"name": "American Football", "icon": "🏈", "status": "wip"},
+    {"name": "Rugby League",      "icon": "🏉", "status": "wip"},
+    {"name": "Rugby Union",       "icon": "🏉", "status": "wip"},
+    {"name": "Volleyball",        "icon": "🏐", "status": "wip"},
+    {"name": "Handball",          "icon": "🤾", "status": "wip"},
+    {"name": "Cricket",           "icon": "🏏", "status": "wip"},
+    {"name": "Tennis",            "icon": "🎾", "status": "wip"},
+]
 
-SPORT_ICONS = {"football": "⚽", "f1": "🏎️"}
+_SPORT_ICON: dict[str, str] = {s["name"].lower().replace(" ", "_"): s["icon"] for s in _SPORTS}
+_SPORT_ICON.update({"football": "⚽", "f1": "🏎️"})
+
+_F1_LEAGUE = {"id": 9001, "name": "F1 2024 Season", "sport": "f1"}
 
 
 # ── Cached API helpers ─────────────────────────────────────────────────────
-# Each function creates its own FootballClient so that the cache layer never
-# holds a reference to a stateful object. TTL = 1 h keeps API usage low.
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_countries() -> list[dict]:
@@ -47,23 +63,48 @@ def fetch_teams_by_league(league_id: int) -> list[dict]:
         return []
 
 
-# ── Event helpers ──────────────────────────────────────────────────────────
+# ── Profile-aware event fetching ───────────────────────────────────────────
 
-def fetch_all_events() -> tuple[list[SportsEvent], list[str]]:
+def fetch_all_events(profile: UserProfile) -> tuple[list[SportsEvent], list[str]]:
+    """Query only the teams and leagues the user actually follows."""
     events: list[SportsEvent] = []
     errors: list[str] = []
-    for ClientClass in _ACTIVE_CLIENTS:
+    seen: set[tuple] = set()
+
+    def add_unique(new_events: list[SportsEvent]) -> None:
+        for e in new_events:
+            key = (e.time, e.title)
+            if key not in seen:
+                seen.add(key)
+                events.append(e)
+
+    football_leagues = [l for l in profile.favorite_leagues if l.get("sport") == "football"]
+    football_teams   = [t for t in profile.favorite_teams   if t.get("sport") == "football"]
+    f1_entries       = [l for l in profile.favorite_leagues if l.get("sport") == "f1"]
+
+    if football_leagues or football_teams:
         try:
-            events.extend(ClientClass().get_upcoming_events())
+            client = FootballClient()
+            for league in football_leagues:
+                add_unique(client.get_upcoming_events(league_id=league["id"]))
+            for team in football_teams:
+                add_unique(client.get_upcoming_events(team_id=team["id"]))
         except Exception as exc:
-            errors.append(f"{ClientClass.__name__}: {exc}")
+            errors.append(f"FootballClient: {exc}")
+
+    if f1_entries:
+        try:
+            add_unique(F1Client().get_upcoming_events())
+        except Exception as exc:
+            errors.append(f"F1Client: {exc}")
+
     return sorted(events), errors
 
 
 def events_to_dataframe(events: list[SportsEvent]) -> pd.DataFrame:
     return pd.DataFrame([
         {
-            "Sport": SPORT_ICONS.get(e.sport, e.sport) + " " + e.sport.upper(),
+            "Sport": _SPORT_ICON.get(e.sport, e.sport) + " " + e.sport.upper(),
             "Time (UTC)": e.time.strftime("%Y-%m-%d %H:%M"),
             "Category": e.category,
             "Event": e.title,
@@ -81,12 +122,13 @@ def render_following(profile: UserProfile) -> None:
     shown = False
 
     for team in profile.favorite_teams:
-        icon = SPORT_ICONS.get(team.get("sport", ""), "🏅")
-        st.sidebar.markdown(f"{icon} **{team['name']}**")
+        icon = _SPORT_ICON.get(team.get("sport", ""), "🏅")
+        st.sidebar.markdown(f"⭐ {icon} {team['name']}")
         shown = True
 
     for league in profile.favorite_leagues:
-        st.sidebar.markdown(f"🏆 **{league['name']}**")
+        icon = _SPORT_ICON.get(league.get("sport", ""), "🏆")
+        st.sidebar.markdown(f"⭐ {icon} {league['name']}")
         shown = True
 
     if not shown:
@@ -97,7 +139,37 @@ def render_find_new_team(profile: UserProfile) -> None:
     st.sidebar.markdown("---")
     st.sidebar.subheader("🔍 Find New Team")
 
-    # Step 1 — Country
+    # Step 0 — Sport
+    sport_labels = [f"{s['icon']} {s['name']}" for s in _SPORTS]
+    selected_label = st.sidebar.selectbox(
+        "Sport", [_PLACEHOLDER] + sport_labels, key="sel_sport"
+    )
+    if selected_label == _PLACEHOLDER:
+        return
+
+    sport = next(s for s in _SPORTS if f"{s['icon']} {s['name']}" == selected_label)
+
+    # ── WIP sports ────────────────────────────────────────────────────────────
+    if sport["status"] == "wip":
+        st.sidebar.info("🛠️ Work in Progress: Integration for this sport is coming soon!")
+        return
+
+    # ── Formula 1 (mock data) ─────────────────────────────────────────────────
+    if sport["status"] == "f1":
+        st.sidebar.info(
+            "🛠️ Work in Progress: Live F1 data coming soon. Mock data is active."
+        )
+        already = any(l.get("sport") == "f1" for l in profile.favorite_leagues)
+        if already:
+            st.sidebar.success("⭐ Already following F1 2024 Season")
+        elif st.sidebar.button("🏎️ Follow F1 2024 Season", key="btn_f1"):
+            profile.add_league(_F1_LEAGUE)
+            st.session_state["_note"] = ("success", "Now following **F1 2024 Season**!")
+            st.rerun()
+        return
+
+    # ── Football — cascading dropdowns ────────────────────────────────────────
+
     countries = fetch_countries()
     if not countries:
         st.sidebar.warning("API unavailable. Check your secrets.")
@@ -111,7 +183,6 @@ def render_find_new_team(profile: UserProfile) -> None:
     if country == _PLACEHOLDER:
         return
 
-    # Step 2 — League
     leagues = fetch_leagues_by_country(country)
     if not leagues:
         st.sidebar.caption(f"No leagues found for {country}.")
@@ -129,15 +200,14 @@ def render_find_new_team(profile: UserProfile) -> None:
     league = league_map[league_name]
     league_id = league["league"]["id"]
 
-    if st.sidebar.button("🏆 Follow this Competition", key="btn_league"):
-        added = profile.add_league({"id": league_id, "name": league_name, "sport": "football"})
-        st.session_state["_note"] = (
-            "success",
-            f"Now following **{league_name}**!" if added else f"Already following **{league_name}**.",
-        )
+    already_league = any(l["id"] == league_id for l in profile.favorite_leagues)
+    if already_league:
+        st.sidebar.success(f"⭐ Already following {league_name}")
+    elif st.sidebar.button("🏆 Follow this Competition", key="btn_league"):
+        profile.add_league({"id": league_id, "name": league_name, "sport": "football"})
+        st.session_state["_note"] = ("success", f"Now following **{league_name}**!")
         st.rerun()
 
-    # Step 3 — Team
     teams = fetch_teams_by_league(league_id)
     if not teams:
         st.sidebar.caption("No teams found for this league/season.")
@@ -152,13 +222,13 @@ def render_find_new_team(profile: UserProfile) -> None:
     if team_name == _PLACEHOLDER:
         return
 
-    if st.sidebar.button("⚽ Follow this Team", key="btn_team"):
-        tid = team_map[team_name]["team"]["id"]
-        added = profile.add_team({"id": tid, "name": team_name, "sport": "football"})
-        st.session_state["_note"] = (
-            "success",
-            f"Added **{team_name}** to favorites!" if added else f"Already following **{team_name}**.",
-        )
+    tid = team_map[team_name]["team"]["id"]
+    already_team = any(t["id"] == tid for t in profile.favorite_teams)
+    if already_team:
+        st.sidebar.success(f"⭐ Already following {team_name}")
+    elif st.sidebar.button("⚽ Follow this Team", key="btn_team"):
+        profile.add_team({"id": tid, "name": team_name, "sport": "football"})
+        st.session_state["_note"] = ("success", f"Added **{team_name}** to favorites!")
         st.rerun()
 
 
@@ -167,7 +237,6 @@ def render_find_new_team(profile: UserProfile) -> None:
 def main() -> None:
     st.set_page_config(page_title="Sports Dashboard", page_icon="🏆", layout="wide")
 
-    # User selector
     st.sidebar.title("🏆 Sports Dashboard")
     profiles = [p.stem for p in sorted(_PROFILES_DIR.glob("*.json"))]
     if not profiles:
@@ -177,7 +246,6 @@ def main() -> None:
     selected = st.sidebar.selectbox("Select user", profiles)
     profile = UserProfile(selected)
 
-    # One-shot notification from previous rerun (add_team / add_league result)
     if "_note" in st.session_state:
         level, msg = st.session_state.pop("_note")
         (st.sidebar.success if level == "success" else st.sidebar.info)(msg)
@@ -188,23 +256,25 @@ def main() -> None:
     # Main area
     st.title(f"Welcome, {profile.name}!")
     st.caption(f"Timezone: {profile.timezone}")
-
-    st.subheader("Upcoming Events — All Sports")
+    st.subheader("Upcoming Events — Your Sports")
 
     if st.button("Fetch Events", type="primary"):
-        with st.spinner("Fetching from all sources..."):
-            events, errors = fetch_all_events()
+        with st.spinner("Fetching from your followed teams and leagues..."):
+            events, errors = fetch_all_events(profile)
 
         for err in errors:
             st.warning(f"Skipped: {err}")
 
         if events:
             st.dataframe(events_to_dataframe(events), use_container_width=True, hide_index=True)
-            st.caption(f"{len(events)} event(s) from {len(_ACTIVE_CLIENTS)} source(s).")
+            st.caption(f"{len(events)} event(s) matched your profile.")
         else:
-            st.info("No upcoming events found.")
+            st.info(
+                "No upcoming events found. "
+                "Follow some teams or leagues in the sidebar first!"
+            )
     else:
-        st.info("Press **Fetch Events** to load upcoming events across all sports.")
+        st.info("Press **Fetch Events** to load upcoming events for your followed teams and leagues.")
 
 
 if __name__ == "__main__":

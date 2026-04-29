@@ -41,29 +41,43 @@ class FootballClient(BaseSportClient):
 
         return response.json()
 
-    def get_upcoming_events(self, next: int = 10) -> list[SportsEvent]:
-        """Return the next *next* fixtures as normalised SportsEvent objects."""
-        data = self.get("/fixtures", params={"next": next})
-        events = []
+    # ── Parsing ───────────────────────────────────────────────────────────────
 
+    def _parse_fixtures(self, data: dict) -> list[SportsEvent]:
+        events = []
         for entry in data.get("response", []):
             fixture = entry["fixture"]
             league = entry["league"]
             teams = entry["teams"]
-
-            title = f"{teams['home']['name']} vs {teams['away']['name']}"
-            event_time = datetime.fromisoformat(fixture["date"]).astimezone(timezone.utc)
-            status = fixture["status"]["long"]
-
             events.append(SportsEvent(
-                title=title,
+                title=f"{teams['home']['name']} vs {teams['away']['name']}",
                 sport="football",
                 category=league["name"],
-                time=event_time,
-                status=status,
+                time=datetime.fromisoformat(fixture["date"]).astimezone(timezone.utc),
+                status=fixture["status"]["long"],
             ))
-
         return events
+
+    # ── BaseSportClient interface ─────────────────────────────────────────────
+
+    def get_upcoming_events(
+        self,
+        *,
+        league_id: int | None = None,
+        team_id: int | None = None,
+        next: int = 10,
+    ) -> list[SportsEvent]:
+        """Fetch upcoming fixtures, optionally filtered by league or team.
+
+        When neither is supplied the API returns fixtures globally (free-tier
+        may return an empty list without a filter — always prefer passing one).
+        """
+        params: dict = {"next": next}
+        if league_id is not None:
+            params.update({"league": league_id, "season": 2024})
+        if team_id is not None:
+            params["team"] = team_id
+        return self._parse_fixtures(self.get("/fixtures", params=params))
 
     def get_leagues(self) -> dict:
         """Kept for backwards compatibility with existing code."""
