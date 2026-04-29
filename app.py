@@ -12,7 +12,7 @@ from src.user_manager import UserProfile
 _PROFILES_DIR = Path("profiles")
 _PLACEHOLDER = "— select —"
 _SAO_PAULO_TZ = ZoneInfo("America/Sao_Paulo")
-_SEASON = 2026
+_SEASON = 2024  # free tier cap; football falls back to 2025 automatically
 
 # All 12 API-Sports categories.
 # status: "live" = full integration | "f1" = mock data available | "wip" = not yet integrated
@@ -273,6 +273,8 @@ def main() -> None:
     if "_note" in st.session_state:
         level, msg = st.session_state.pop("_note")
         (st.sidebar.success if level == "success" else st.sidebar.info)(msg)
+
+    st.sidebar.caption("📊 Running on Free Tier (Season 2024 Data)")
 
     render_following(profile)
 
