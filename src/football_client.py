@@ -11,7 +11,8 @@ from src.models import SportsEvent
 load_dotenv()
 
 _BASE_URL = "https://v3.football.api-sports.io"
-_SEASON = 2024  # primary season; falls back to _SEASON + 1 when empty
+_SEASON = 2024  # free tier cap: 2022–2024; next/last params blocked
+_LAST_N = 5     # how many recent matches to return per team/league
 
 
 class FootballClient(BaseSportClient):
@@ -68,32 +69,29 @@ class FootballClient(BaseSportClient):
         league_id: int | None = None,
         team_id: int | None = None,
     ) -> list[SportsEvent]:
-        """Query fixtures with status=NS (Not Started).
+        """Fetch all fixtures for _SEASON, then return the _LAST_N most recent.
 
-        For league queries, tries _SEASON first, then _SEASON + 1 if empty.
-        For team queries, omits season so the API finds the next fixture in any season.
+        Free-tier constraints:
+          - Only seasons 2022-2024 are accessible.
+          - 'next' and 'last' query params are blocked — slice client-side instead.
+          - 'status=NS' returns 0 for a completed season; omit it entirely.
         """
-        seasons_to_try = [_SEASON, _SEASON + 1] if league_id is not None else [None]
+        params: dict = {"season": _SEASON}
+        if league_id is not None:
+            params["league"] = league_id
+        if team_id is not None:
+            params["team"] = team_id
 
-        for season in seasons_to_try:
-            params: dict = {"status": "NS"}
-            if league_id is not None:
-                params.update({"league": league_id, "season": season})
-            if team_id is not None:
-                params["team"] = team_id
+        print(f"[Football] Calling: {_BASE_URL}/fixtures?{urlencode(params)}")
+        data = self.get("/fixtures", params=params)
+        all_events = self._parse_fixtures(data)
 
-            print(f"[Football] Calling: {_BASE_URL}/fixtures?{urlencode(params)}")
-            data = self.get("/fixtures", params=params)
-            events = self._parse_fixtures(data)
+        label = f"league={league_id}" if league_id else f"team={team_id}"
+        print(f"Football {_SEASON} ({label}): {len(all_events)} total fixtures — returning last {_LAST_N}")
 
-            label = f"league={league_id}" if league_id else f"team={team_id}"
-            print(f"Football {season or 'any'} ({label}): {len(events)} event(s) found")
+        # Sort descending by time → take first _LAST_N → caller re-sorts ascending
+        return sorted(all_events, reverse=True)[:_LAST_N]
 
-            if events:
-                return events
-
-        return []
-
-    def get_leagues(self) -> dict:
+    def get_leagues(self) -> dict:  # kept for app.py backwards compatibility
         """Kept for backwards compatibility with existing code."""
         return self.get("/leagues")
