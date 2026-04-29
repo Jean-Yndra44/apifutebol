@@ -10,6 +10,7 @@ from src.models import SportsEvent
 load_dotenv()
 
 _BASE_URL = "https://v3.football.api-sports.io"
+_SEASON = 2026
 
 
 class FootballClient(BaseSportClient):
@@ -74,7 +75,7 @@ class FootballClient(BaseSportClient):
         """
         params: dict = {"next": next}
         if league_id is not None:
-            params.update({"league": league_id, "season": 2024})
+            params.update({"league": league_id, "season": _SEASON})
         if team_id is not None:
             params["team"] = team_id
         return self._parse_fixtures(self.get("/fixtures", params=params))

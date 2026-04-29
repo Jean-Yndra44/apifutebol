@@ -1,4 +1,5 @@
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import streamlit as st
@@ -10,6 +11,8 @@ from src.user_manager import UserProfile
 
 _PROFILES_DIR = Path("profiles")
 _PLACEHOLDER = "— select —"
+_SAO_PAULO_TZ = ZoneInfo("America/Sao_Paulo")
+_SEASON = 2026
 
 # All 12 API-Sports categories.
 # status: "live" = full integration | "f1" = mock data available | "wip" = not yet integrated
@@ -57,7 +60,7 @@ def fetch_leagues_by_country(country: str) -> list[dict]:
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_teams_by_league(league_id: int) -> list[dict]:
     try:
-        data = FootballClient().get("/teams", params={"league": league_id, "season": 2024})
+        data = FootballClient().get("/teams", params={"league": league_id, "season": _SEASON})
         return sorted(data.get("response", []), key=lambda t: t["team"]["name"])
     except Exception:
         return []
@@ -105,13 +108,34 @@ def events_to_dataframe(events: list[SportsEvent]) -> pd.DataFrame:
     return pd.DataFrame([
         {
             "Sport": _SPORT_ICON.get(e.sport, e.sport) + " " + e.sport.upper(),
-            "Time (UTC)": e.time.strftime("%Y-%m-%d %H:%M"),
+            "Time (BRT)": e.time.astimezone(_SAO_PAULO_TZ).strftime("%Y-%m-%d %H:%M"),
             "Category": e.category,
             "Event": e.title,
             "Status": e.status,
         }
         for e in events
     ])
+
+
+# ── Debug helpers ─────────────────────────────────────────────────────────
+
+def _compute_debug(events: list[SportsEvent], profile: UserProfile) -> list[str]:
+    """Return sidebar captions for followed sports that returned zero events."""
+    fetched = {e.sport for e in events}
+    msgs = []
+
+    follows_football = (
+        any(t.get("sport") == "football" for t in profile.favorite_teams) or
+        any(l.get("sport") == "football" for l in profile.favorite_leagues)
+    )
+    follows_f1 = any(l.get("sport") == "f1" for l in profile.favorite_leagues)
+
+    if follows_football and "football" not in fetched:
+        msgs.append(f"Checked Football for {_SEASON} — No upcoming events found in the next 7 days.")
+    if follows_f1 and "f1" not in fetched:
+        msgs.append(f"Checked Formula 1 for {_SEASON} — No upcoming events found in the next 7 days.")
+
+    return msgs
 
 
 # ── Sidebar sections ───────────────────────────────────────────────────────
@@ -251,6 +275,10 @@ def main() -> None:
         (st.sidebar.success if level == "success" else st.sidebar.info)(msg)
 
     render_following(profile)
+
+    for msg in st.session_state.get("_debug", []):
+        st.sidebar.caption(f"🔍 {msg}")
+
     render_find_new_team(profile)
 
     # Main area
@@ -261,6 +289,8 @@ def main() -> None:
     if st.button("Fetch Events", type="primary"):
         with st.spinner("Fetching from your followed teams and leagues..."):
             events, errors = fetch_all_events(profile)
+
+        st.session_state["_debug"] = _compute_debug(events, profile)
 
         for err in errors:
             st.warning(f"Skipped: {err}")
