@@ -1,3 +1,4 @@
+import json
 import os
 from datetime import datetime, timezone
 
@@ -14,7 +15,7 @@ _SEASON = 2026
 
 
 class F1Client(BaseSportClient):
-    """API-Sports Formula 1 client for the 2026 season.
+    """API-Sports Formula 1 client.
 
     Uses the same API key as FootballClient — API-Sports keys are cross-sport.
     Host header switches to v1.formula-1.api-sports.io.
@@ -44,7 +45,6 @@ class F1Client(BaseSportClient):
         """Return a SportsEvent for a future race, or None if past / unparseable."""
         now = datetime.now(tz=timezone.utc)
 
-        # API-Sports may send a UNIX timestamp or an ISO-8601 date string.
         if ts := race.get("timestamp"):
             race_time = datetime.fromtimestamp(int(ts), tz=timezone.utc)
         elif raw := race.get("date"):
@@ -58,7 +58,7 @@ class F1Client(BaseSportClient):
             return None
 
         if race_time <= now:
-            return None  # skip completed races
+            return None
 
         return SportsEvent(
             title=race.get("competition", {}).get("name", "F1 Race"),
@@ -68,10 +68,37 @@ class F1Client(BaseSportClient):
             status=race.get("status", "Scheduled"),
         )
 
-    def get_upcoming_events(self) -> list[SportsEvent]:
+    def get_upcoming_events(self) -> list[SportsEvent]:  # DEBUG
+        print(f"\n[F1] Calling: {_BASE_URL}/races?season={_SEASON}")
         data = self.get("/races", params={"season": _SEASON})
-        events = []
-        for race in data.get("response", []):
-            if event := self._parse_race(race):
-                events.append(event)
+
+        print(f"[F1] Raw response:\n{json.dumps(data, indent=2)}")
+
+        events = [e for race in data.get("response", []) if (e := self._parse_race(race))]
+        print(f"F1 {_SEASON}: {len(events)} event(s) found")
+
+        if not events:
+            self._check_previous_season(data)
+
         return events
+
+    def _check_previous_season(self, season_2026_data: dict) -> None:
+        """If 2026 returned nothing, probe 2025 to distinguish 'no data yet' vs 'off-season'."""
+        raw_count = len(season_2026_data.get("response", []))
+        print(f"  ->{_SEASON} returned {raw_count} total races (0 upcoming).")
+        print(f"  ->Checking {_SEASON - 1} to see if it is still the active season...")
+
+        try:
+            fallback = self.get("/races", params={"season": _SEASON - 1})
+        except Exception as exc:
+            print(f"  ->{_SEASON - 1} check failed: {exc}")
+            return
+
+        prev_count = len(fallback.get("response", []))
+        if prev_count > 0:
+            print(
+                f"  ->{_SEASON - 1} season has {prev_count} race(s). "
+                f"The {_SEASON} calendar is likely not published yet."
+            )
+        else:
+            print(f"  ->{_SEASON - 1} also empty. Possible API subscription gap.")

@@ -1,5 +1,6 @@
 import os
 from datetime import datetime, timezone
+from urllib.parse import urlencode
 
 import requests
 from dotenv import load_dotenv
@@ -61,24 +62,53 @@ class FootballClient(BaseSportClient):
 
     # ── BaseSportClient interface ─────────────────────────────────────────────
 
-    def get_upcoming_events(
+    def get_upcoming_events(  # DEBUG
         self,
         *,
         league_id: int | None = None,
         team_id: int | None = None,
         next: int = 10,
     ) -> list[SportsEvent]:
-        """Fetch upcoming fixtures, optionally filtered by league or team.
-
-        When neither is supplied the API returns fixtures globally (free-tier
-        may return an empty list without a filter — always prefer passing one).
-        """
         params: dict = {"next": next}
         if league_id is not None:
             params.update({"league": league_id, "season": _SEASON})
         if team_id is not None:
             params["team"] = team_id
-        return self._parse_fixtures(self.get("/fixtures", params=params))
+
+        print(f"[Football] Calling: {_BASE_URL}/fixtures?{urlencode(params)}")
+        data = self.get("/fixtures", params=params)
+        events = self._parse_fixtures(data)
+
+        label = f"league={league_id}" if league_id else f"team={team_id}"
+        print(f"Football {_SEASON} ({label}): {len(events)} event(s) found")
+
+        if not events and league_id is not None:
+            self._check_previous_season(league_id, next)
+
+        return events
+
+    def _check_previous_season(self, league_id: int, next: int) -> None:
+        """If 2026 is empty for this league, probe 2025 to distinguish 'not published' vs 'off-season'."""
+        prev = _SEASON - 1
+        fallback_params = {"league": league_id, "season": prev, "next": next}
+        print(
+            f"  ->{_SEASON} empty for league {league_id}. "
+            f"Checking {prev}: {_BASE_URL}/fixtures?{urlencode(fallback_params)}"
+        )
+        try:
+            fallback = self.get("/fixtures", params=fallback_params)
+        except Exception as exc:
+            print(f"  ->{prev} check failed: {exc}")
+            return
+
+        count = len(fallback.get("response", []))
+        if count > 0:
+            print(
+                f"  ->{prev} season has {count} fixture(s). "
+                f"The {_SEASON} calendar for league {league_id} is likely not published yet."
+            )
+        else:
+            print(f"  ->{prev} also empty for league {league_id}. May be off-season or wrong season param.")
 
     def get_leagues(self) -> dict:
         """Kept for backwards compatibility with existing code."""
